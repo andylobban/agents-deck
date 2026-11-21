@@ -318,6 +318,8 @@ nothing to set up: the deck finds them and lets you answer, interrupt and jump t
 | agentctl (built in) | agents it starts with `agentctl new`, each in a tmux session with a status header |
 | Claude Code on its own | sessions you started by hand in any terminal, once you add them (`agentctl live`, `agentctl add`) |
 
+For Hermes and T3 Code on another machine, set up [read-only remote sessions over SSH](docs/features.md#remote-sessions-over-ssh).
+
 **Your harness missing?** Open a pull request ([docs/harnesses.md](docs/harnesses.md) walks through
 adding one), or name it in the [harness tracking issue](https://github.com/brushknight/agents-deck/issues/7).
 

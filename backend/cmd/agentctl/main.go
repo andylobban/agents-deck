@@ -1151,6 +1151,7 @@ func serve(args []string) error {
 		go d.WatchHerdr()
 		go d.WatchCmux()
 		go d.WatchLive()
+		d.WatchRemote()
 		ctl, lc = d, d
 	}
 

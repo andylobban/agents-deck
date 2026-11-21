@@ -19,6 +19,9 @@ var errExternal = errors.New("this is a Codex app session — answer, interrupt 
 
 // externalErr is the reason an external agent can't take an action.
 func externalErr(e store.Entry) error {
+	if e.Remote {
+		return errRemoteReadOnly
+	}
 	if e.A.Tool == "claude" {
 		return errLive
 	}

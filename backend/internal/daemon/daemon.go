@@ -19,6 +19,7 @@ import (
 	"github.com/brushknight/agents-deck/backend/internal/header"
 	"github.com/brushknight/agents-deck/backend/internal/model"
 	"github.com/brushknight/agents-deck/backend/internal/paths"
+	"github.com/brushknight/agents-deck/backend/internal/remotestatus"
 	"github.com/brushknight/agents-deck/backend/internal/server"
 	"github.com/brushknight/agents-deck/backend/internal/store"
 	"github.com/brushknight/agents-deck/backend/internal/term"
@@ -37,6 +38,8 @@ type Config struct {
 	// Cmux: mirror Claude agents running in cmux onto the board (default on;
 	// cmux's socket access must be Automation).
 	Cmux *bool `json:"cmux"`
+	// RemoteStatusSources list SSH hosts that publish read-only snapshots.
+	RemoteStatusSources []remotestatus.Config `json:"remoteStatusSources"`
 	// CodexWindowHours: threads updated within this many hours are shown (default 6).
 	CodexWindowHours float64 `json:"codexWindowHours"`
 	// ExitedTTLSeconds: how long exited agents stay visible (0 = 10 min, <0 = forever).
@@ -58,6 +61,7 @@ type Daemon struct {
 	orca      orcaWatch
 	herdr     herdrWatch
 	cmux      cmuxWatch
+	remote    remoteWatch
 	front     string // tmux session of the focused terminal (last tick)
 
 	lastAutoRestore time.Time
@@ -606,6 +610,9 @@ func (d *Daemon) Focus(id string) error {
 	if !ok {
 		return server.ErrNotFound
 	}
+	if e.Remote {
+		return d.focusRemote(e)
+	}
 	if h, ok := d.harnessOf(e); ok {
 		return h.focus(e)
 	}
@@ -689,6 +696,10 @@ func (d *Daemon) Dismiss(id string) error {
 	e, ok := d.Store.Get(id)
 	if !ok {
 		return server.ErrNotFound
+	}
+	if e.Remote {
+		d.hideRemote(id)
+		return nil
 	}
 	if h, ok := d.harnessOf(e); ok {
 		h.hide(e) // off the deck until it's active again; it keeps running in its app

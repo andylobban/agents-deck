@@ -117,6 +117,49 @@ daemon uses the socket methods `surface.read_text`, `surface.send_text`, `surfac
 `surface.focus` and `system.identify`. Codex sessions in cmux aren't mirrored yet. `config.json`:
 `"cmux": false` turns it off.
 
+## Remote sessions over SSH
+
+The deck can show read-only Hermes and T3 Code sessions alongside local sessions. Install a status
+helper on the remote machine and verify that its command prints a [version 1 snapshot](#snapshot-format)
+over SSH. Use a host alias from your OpenSSH config or a `user@host` destination.
+
+Add `remoteStatusSources` to the deck's existing `config.json` and restart `agentctl`. Find the
+configuration directory with `agentctl status`. The `command` is a path on the remote machine, without
+arguments. If omitted, the deck runs `~/apps/agent-status-helper/current/agent-status-helper.pyz`.
+
+```json
+{
+  "remoteStatusSources": [
+    {"host": "agent-host"}
+  ]
+}
+```
+
+The deck uses your SSH config and requires a known host key and a login that works without a prompt.
+Verify that first with `ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes agent-host` followed by
+the helper path. The service log reports connection failures and partial results.
+
+Waiting sessions appear in **Needs you**. The deck marks a turn unread when the helper reports that the
+turn finished while the deck was watching. **Focus terminal** opens the session's browser link when the
+helper provides one. Answer and interrupt in the original app. Hiding a tile only changes the deck.
+A short outage leaves the last
+known tiles visible. The deck drops them on the next poll after one minute without a successful update.
+Remove the host from `remoteStatusSources` and restart `agentctl` to turn off polling.
+
+### Snapshot format
+
+The remote executable writes one JSON object to standard output and exits. `schemaVersion` is `1`.
+`sources` maps each provider to `status` (`ok`, `partial`, or `unavailable`). For a `partial` source,
+`scopes` lists the scopes whose rows were fetched successfully. `sessions` is an array. A healthy
+source with no sessions has an empty array. A missing source was removed from the helper's config.
+
+Each session supplies its stable `id`, a `source` key from `sources`, a `scope` such as the Hermes
+profile or T3 project, a `title`, and a `status`. Use `queued`, `running`, `waiting`, `idle`, `finished`,
+`failed`, `interrupted`, or `unknown`. Optional fields are `model`, `startedAt` and `updatedAt` (RFC 3339
+timestamps), and `url` (an HTTPS link to the session). The deck can read an unavailable snapshot from a
+helper that exits with code 2. The snapshot carries display metadata. Provider authentication is handled
+by the helper on its host.
+
 ## Claude sessions started elsewhere
 
 Claude Code sessions you start by hand in any terminal (plain `claude`) can join the deck too. Tap a free cell (or **+ session** on the web dashboard, or `agentctl live` / `agentctl add <session>`) to see them and add one; it lands in that cell.

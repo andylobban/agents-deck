@@ -25,6 +25,8 @@ type Entry struct {
 	Account        string      `json:"account,omitempty"`  // the Claude account the deck started it in ("" = see its transcript)
 	CustomTitle    string      `json:"-"`                  // Claude's custom-title (/rename), from the transcript
 	External       bool        `json:"-"`                  // mirrored from another app (Codex, Orca, herdr, cmux); never persisted
+	Remote         bool        `json:"-"`                  // read-only tile from an SSH status snapshot
+	RemoteURL      string      `json:"-"`                  // browser link, opened locally on request
 	Background     bool        `json:"-"`                  // shown running only because its subagents work (its main thread is between turns)
 	WaitBackground bool        `json:"-"`                  // the open prompt is a subagent's, asked while the main thread was between turns
 	WaitAgent      string      `json:"-"`                  // …and that subagent's id
