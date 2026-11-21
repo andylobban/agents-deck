@@ -91,3 +91,37 @@ func TestRemotePartialFailureExpiresOnlyUnconfirmedTiles(t *testing.T) {
 		t.Fatal("transport failure should eventually clear the stale host")
 	}
 }
+
+func TestRemoteSubagentActivityDistinguishesTheParentTurn(t *testing.T) {
+	d := &Daemon{Store: store.New("", "test", "dev")}
+	now := time.Now().UTC()
+	parent := remotestatus.Session{ID: "parent", Source: "hermes", Scope: "alpha", Status: "running", RunningSubagents: 2, BackgroundOnly: true}
+	snap := &remotestatus.Snapshot{
+		Sources:  map[string]remotestatus.Source{"hermes": {Status: "ok"}},
+		Sessions: []remotestatus.Session{parent},
+	}
+	id := remoteID("host", parent)
+	d.syncRemote("host", snap, now)
+	if item, ok := d.Store.Get(id); !ok || !item.Background || item.A.Activity == nil ||
+		item.A.Activity.Detail != "2 subagents working" || len(item.A.Subagents) != 2 {
+		t.Fatalf("child-only activity should show a count and indicator: %+v", item.A)
+	}
+
+	snap.Sessions[0].BackgroundOnly = false
+	d.syncRemote("host", snap, now.Add(time.Second))
+	if item, ok := d.Store.Get(id); !ok || item.Background || item.A.Activity != nil || len(item.A.Subagents) != 2 {
+		t.Fatalf("parent working with children should keep the indicator without child-only activity: %+v", item.A)
+	}
+
+	snap.Sessions[0].Status = "waiting"
+	d.syncRemote("host", snap, now.Add(2*time.Second))
+	if item, ok := d.Store.Get(id); !ok || item.A.Waiting == nil || len(item.A.Subagents) != 2 {
+		t.Fatalf("waiting parent should keep its prompt and child indicator: %+v", item.A)
+	}
+
+	snap.Sessions[0].Status, snap.Sessions[0].RunningSubagents = "idle", 0
+	d.syncRemote("host", snap, now.Add(3*time.Second))
+	if item, ok := d.Store.Get(id); !ok || item.A.Status != model.Idle || len(item.A.Subagents) != 0 {
+		t.Fatalf("child indicator should clear when the count drops to zero: %+v", item.A)
+	}
+}

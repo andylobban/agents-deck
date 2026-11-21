@@ -142,6 +142,8 @@ the helper path. The service log reports connection failures and partial results
 Waiting sessions appear in **Needs you**. The deck marks a turn unread when the helper reports that the
 turn finished while the deck was watching. **Focus terminal** opens the session's browser link when the
 helper provides one. Answer and interrupt in the original app. Hiding a tile only changes the deck.
+When the helper reports live subagents, the tile shows the subagent indicator. If only the children
+are working, the tile shows the subagent count in place of the parent's current activity.
 A short outage leaves the last
 known tiles visible. The deck drops them on the next poll after one minute without a successful update.
 Remove the host from `remoteStatusSources` and restart `agentctl` to turn off polling.
@@ -159,6 +161,9 @@ profile or T3 project, a `title`, and a `status`. Use `queued`, `running`, `wait
 timestamps), and `url` (an HTTPS link to the session). The deck can read an unavailable snapshot from a
 helper that exits with code 2. The snapshot carries display metadata. Provider authentication is handled
 by the helper on its host.
+
+Optional `runningSubagents` gives a count of live children. Set `backgroundOnly: true` and
+`status: "running"` when an idle parent is still running because of its children.
 
 ## Claude sessions started elsewhere
 

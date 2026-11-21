@@ -76,3 +76,18 @@ func TestDecodeAndBrowserLinks(t *testing.T) {
 		t.Errorf("did not accept browser link %q", target)
 	}
 }
+
+func TestDecodeOptionalSubagentActivity(t *testing.T) {
+	payload := []byte(`{"schemaVersion":1,"sources":{"hermes":{"status":"ok"}},"sessions":[
+		{"id":"old","source":"hermes","status":"running"},
+		{"id":"new","source":"hermes","status":"running","runningSubagents":2,"backgroundOnly":true}
+	]}`)
+	snapshot, err := decode(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, current := snapshot.Sessions[0], snapshot.Sessions[1]
+	if old.RunningSubagents != 0 || old.BackgroundOnly || current.RunningSubagents != 2 || !current.BackgroundOnly {
+		t.Fatalf("optional activity did not decode: %#v", snapshot.Sessions)
+	}
+}

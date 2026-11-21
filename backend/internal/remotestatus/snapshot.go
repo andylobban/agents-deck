@@ -67,15 +67,17 @@ type Source struct {
 }
 
 type Session struct {
-	ID        string    `json:"id"`
-	Source    string    `json:"source"`
-	Scope     string    `json:"scope"`
-	Title     string    `json:"title"`
-	Model     string    `json:"model"`
-	Status    string    `json:"status"`
-	StartedAt time.Time `json:"startedAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	URL       string    `json:"url"`
+	ID               string    `json:"id"`
+	Source           string    `json:"source"`
+	Scope            string    `json:"scope"`
+	Title            string    `json:"title"`
+	Model            string    `json:"model"`
+	Status           string    `json:"status"`
+	StartedAt        time.Time `json:"startedAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+	URL              string    `json:"url"`
+	RunningSubagents int       `json:"runningSubagents,omitempty"`
+	BackgroundOnly   bool      `json:"backgroundOnly,omitempty"`
 }
 
 // Authoritative reports whether a missing row can be removed immediately. A

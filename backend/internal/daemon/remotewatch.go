@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 
+	"github.com/brushknight/agents-deck/backend/internal/claude"
 	"github.com/brushknight/agents-deck/backend/internal/model"
 	"github.com/brushknight/agents-deck/backend/internal/proc"
 	"github.com/brushknight/agents-deck/backend/internal/remotestatus"
@@ -21,6 +23,7 @@ const (
 	remotePollInterval = 10 * time.Second
 	remotePollTimeout  = 18 * time.Second
 	remoteStaleAfter   = time.Minute
+	maxRemoteSubagents = 64 // bound the display list built from a remote count
 )
 
 var errRemoteReadOnly = errors.New("this session is read-only in the deck; open it in its own app")
@@ -176,6 +179,16 @@ func (d *Daemon) publishRemote(id string, old, session remotestatus.Session) {
 		}
 		e.A.Folder, e.A.Model = folder, remoteText(session.Model, 80)
 		e.SetStatus(remoteState(session.Status))
+		e.A.Subagents = nil
+		for n := range min(session.RunningSubagents, maxRemoteSubagents) {
+			number := strconv.Itoa(n + 1)
+			e.A.Subagents = append(e.A.Subagents, model.Subagent{ID: "s" + number, Title: "Subagent " + number})
+		}
+		if session.BackgroundOnly && e.A.Status == model.Running && len(e.A.Subagents) > 0 {
+			claude.ShowBackground(e)
+		} else if e.Background {
+			e.Background, e.A.Activity = false, nil
+		}
 		if !session.StartedAt.IsZero() {
 			e.A.StartedAt = session.StartedAt
 		}
