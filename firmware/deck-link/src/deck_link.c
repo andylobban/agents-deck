@@ -225,6 +225,10 @@ static void dispatch(deck_link_t *ctx)
 		if (c->on_hat_list)
 			c->on_hat_list(ctx, f->seq, &f->body.hat_list);
 		break;
+	case agentsdeck_link_v1_Frame_magic_tag:
+		if (c->on_magic)
+			c->on_magic(ctx, &f->body.magic);
+		break;
 	case agentsdeck_link_v1_Frame_live_sessions_tag:
 		if (c->on_live_sessions)
 			c->on_live_sessions(ctx, f->seq, &f->body.live_sessions);
@@ -406,7 +410,8 @@ static uint32_t send_agent_cmd(deck_link_t *ctx, pb_size_t tag, const pb_msgdesc
 
 typedef char focus_layout_check[(sizeof(agentsdeck_link_v1_Focus) == sizeof(agentsdeck_link_v1_Interrupt) &&
 				  sizeof(agentsdeck_link_v1_Focus) == sizeof(agentsdeck_link_v1_Dismiss) &&
-				  sizeof(agentsdeck_link_v1_Focus) == sizeof(agentsdeck_link_v1_Resume))
+				  sizeof(agentsdeck_link_v1_Focus) == sizeof(agentsdeck_link_v1_Resume) &&
+				  sizeof(agentsdeck_link_v1_Focus) == sizeof(agentsdeck_link_v1_HatchPet))
 				 ? 1
 				 : -1];
 
@@ -446,6 +451,11 @@ uint32_t deck_resume(deck_link_t *ctx, const char *agent_id)
 	return send_agent_cmd(ctx, agentsdeck_link_v1_Frame_resume_tag, agentsdeck_link_v1_Resume_fields, agent_id);
 }
 
+uint32_t deck_hatch_pet(deck_link_t *ctx, const char *agent_id)
+{
+	return send_agent_cmd(ctx, agentsdeck_link_v1_Frame_hatch_pet_tag, agentsdeck_link_v1_HatchPet_fields, agent_id);
+}
+
 uint32_t deck_move(deck_link_t *ctx, const char *agent_id, uint32_t slot)
 {
 	agentsdeck_link_v1_Move m;
@@ -470,6 +480,35 @@ uint32_t deck_order(deck_link_t *ctx, const char *const *agent_ids, size_t n)
 	for (size_t i = 0; i < n && i < max; i++)
 		copy_str(m.agent_ids[m.agent_ids_count++], sizeof m.agent_ids[0], agent_ids[i]);
 	return send_cmd(ctx, agentsdeck_link_v1_Frame_order_tag, agentsdeck_link_v1_Order_fields, &m);
+}
+
+uint32_t deck_stash(deck_link_t *ctx, const char *const *agent_ids, size_t n)
+{
+	agentsdeck_link_v1_Stash m;
+	memset(&m, 0, sizeof m); /* all false: these ids, or none (give them back) */
+	size_t max = sizeof m.agent_ids / sizeof m.agent_ids[0];
+	m.agent_ids_count = 0;
+	for (size_t i = 0; i < n && i < max; i++)
+		copy_str(m.agent_ids[m.agent_ids_count++], sizeof m.agent_ids[0], agent_ids[i]);
+	return send_cmd(ctx, agentsdeck_link_v1_Frame_stash_tag, agentsdeck_link_v1_Stash_fields, &m);
+}
+
+uint32_t deck_magic_view(deck_link_t *ctx, const char *const *agent_ids, size_t n)
+{
+	agentsdeck_link_v1_MagicView m;
+	memset(&m, 0, sizeof m);
+	size_t max = sizeof m.agent_ids / sizeof m.agent_ids[0];
+	for (size_t i = 0; i < n && i < max; i++)
+		copy_str(m.agent_ids[m.agent_ids_count++], sizeof m.agent_ids[0], agent_ids[i]);
+	return send_cmd(ctx, agentsdeck_link_v1_Frame_magic_view_tag, agentsdeck_link_v1_MagicView_fields, &m);
+}
+
+uint32_t deck_stash_all(deck_link_t *ctx)
+{
+	agentsdeck_link_v1_Stash m;
+	memset(&m, 0, sizeof m);
+	m.all = true;
+	return send_cmd(ctx, agentsdeck_link_v1_Frame_stash_tag, agentsdeck_link_v1_Stash_fields, &m);
 }
 
 uint32_t deck_set_hat(deck_link_t *ctx, const char *agent_id, const char *folder, const char *shape,

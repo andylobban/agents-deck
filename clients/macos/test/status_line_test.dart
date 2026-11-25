@@ -119,6 +119,39 @@ void main() {
       );
     });
 
+    test('a busy Mac, from the CPU guard', () {
+      final s = DeckSystem.fromJson(
+        jsonDecode(
+              '{"platform":"darwin/arm64","boards":{"online":1,"total":1},'
+              '"cpu":{"available":true,"percent":91.6,"busy":true,"limit":80}}',
+            )
+            as Map<String, dynamic>,
+      );
+      expect((s.cpuBusy, s.cpuPercent), (true, 92));
+      final parts = statusParts(ServiceStatus(ServiceState.running, system: s));
+      expect(
+        [for (final p in parts) (p.text, p.page, p.attention)],
+        [
+          ('running', 'troubleshoot', false),
+          ('1 board', 'boards', false),
+          ('Mac busy (92% CPU)', 'agents', true),
+        ],
+      );
+      expect(
+        texts(
+          const ServiceStatus(
+            ServiceState.running,
+            system: DeckSystem(
+              platform: 'linux/amd64',
+              cpuBusy: true,
+              cpuPercent: 85,
+            ),
+          ),
+        ),
+        ['running', 'no boards', 'computer busy (85% CPU)'],
+      );
+    });
+
     test('the system schema', () {
       final s = DeckSystem.fromJson(
         jsonDecode(
@@ -192,6 +225,56 @@ void main() {
       await tester.tap(find.text('· new board on USB'));
       await tester.tap(find.text('· 1 board'));
       expect(opened, ['boards', 'boards']);
+    });
+
+    testWidgets('no Pin button where the shell can\'t pin', (tester) async {
+      await pump(tester, const ServiceStatus(ServiceState.running));
+      expect(find.byKey(const Key('status-pin')), findsNothing);
+      expect(find.byKey(const Key('status-drag')), findsNothing);
+    });
+
+    testWidgets('Pin keeps the deck on top; pinned, the line moves it', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(880, 880 + 2 * statusLineHeight);
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.reset);
+      final pinned = ValueNotifier(false);
+      final asked = <bool>[];
+      var drags = 0;
+      await tester.pumpWidget(
+        MenuBarDeck(
+          source: FakeAgentsSource.demo(),
+          visible: ValueNotifier(true),
+          service: FakeDeckService(
+            const ServiceStatus(ServiceState.running, system: _system),
+          ),
+          pinned: pinned,
+          onPin: (on) {
+            asked.add(on);
+            pinned.value = on;
+          },
+          onDrag: () => drags++,
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Pin'), findsOneWidget);
+      expect(find.byKey(const Key('status-drag')), findsNothing);
+
+      await tester.tap(find.byKey(const Key('status-pin')));
+      await tester.pump();
+      expect(asked, [true]);
+      expect(find.text('Pinned'), findsOneWidget);
+      expect(find.byKey(const Key('status-gear')), findsOneWidget);
+
+      await tester.drag(find.text('running'), const Offset(-60, 20));
+      expect(drags, 1);
+
+      await tester.tap(find.byKey(const Key('status-pin')));
+      await tester.pump();
+      expect(asked, [true, false]);
+      expect(find.text('Pin'), findsOneWidget);
+      expect(find.byKey(const Key('status-drag')), findsNothing);
     });
 
     testWidgets('what does not fit becomes +N', (tester) async {

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/brushknight/agents-deck/backend/internal/accounts"
+	"github.com/brushknight/agents-deck/backend/internal/cpuguard"
 	"github.com/brushknight/agents-deck/backend/internal/daemon"
 	"github.com/brushknight/agents-deck/backend/internal/demo"
 	"github.com/brushknight/agents-deck/backend/internal/devices"
@@ -34,8 +35,10 @@ import (
 	"github.com/brushknight/agents-deck/backend/internal/link"
 	"github.com/brushknight/agents-deck/backend/internal/model"
 	"github.com/brushknight/agents-deck/backend/internal/paths"
+	"github.com/brushknight/agents-deck/backend/internal/pets"
 	"github.com/brushknight/agents-deck/backend/internal/pki"
 	"github.com/brushknight/agents-deck/backend/internal/proc"
+	"github.com/brushknight/agents-deck/backend/internal/queue"
 	"github.com/brushknight/agents-deck/backend/internal/server"
 	"github.com/brushknight/agents-deck/backend/internal/service"
 	"github.com/brushknight/agents-deck/backend/internal/sim"
@@ -87,6 +90,10 @@ const usage = `agentctl: runs and controls agents deck
   agentctl pair <name> [--scope view|act|admin] [--bundle FILE]
                                  pair a device: a one-time code it trades for its own certificate,
                                  or (--bundle) a key and certificate to copy to it over SSH
+  agentctl mcp token create <name> [--scope view|act|admin] | token list | token revoke <name>
+                                 MCP tokens: let an agent (Claude Code) run the deck's agents
+  agentctl mcp [--token T]       the MCP server over stdio, for an MCP client (token from
+                                 AGENTSDECK_MCP_TOKEN); see docs/mcp.md
   agentctl devices [revoke|approve|remove <name> | scope <name> <scope>]
                                  paired devices and serial boards; cut one off, approve a board
   agentctl link [ports | add <port> [--baud N] | rm <port>]
@@ -119,6 +126,13 @@ const usage = `agentctl: runs and controls agents deck
   agentctl bluetooth [scan | ls | add <name>]
                                  boards over Bluetooth: find one nearby, add it with the code on its screen
   agentctl system                what the service is doing (boards, new ports, updates)
+  agentctl cpu [--top]           how much CPU the service and its helpers use, the whole machine
+                                 and the CPU guard's limit; --top: who uses it (each agent with its
+                                 biggest programs, the deck, other programs)
+  agentctl cpu limit <60-95> [--for 3h] | schedule
+                                 the CPU guard's limit for now: until the schedule's next change
+                                 (or for the time given); schedule: back to the schedule
+  agentctl cpu schedule          the week's schedule for the CPU guard's limit
   agentctl settings [<key> <value>]
                                  start-at-login, notifications, sound, restore, updates, network
   agentctl diagnostics           a report to send when something's wrong (no names or folders)
@@ -130,7 +144,7 @@ const usage = `agentctl: runs and controls agents deck
                                  that runs an older version installs it with one click
   agentctl firmware rm <board> [<version>]
                                  remove builds made on this computer
-  agentctl serve [--demo] [--log FILE]
+  agentctl serve [--demo [--fixture FILE]] [--log FILE]
                                  run the service (normally started at login, see install)
   agentctl install               start the service at login (launchd, systemd, Windows startup) and now
   agentctl uninstall             stop the service and no longer start it at login
@@ -158,6 +172,8 @@ func main() {
 	case "hook":
 		hook() // never fails, never prints
 		return
+	case "statusline":
+		os.Exit(statusline()) // prints only what the status line it chains prints
 	case "serve":
 		err = serve(args)
 	case "new":
@@ -208,6 +224,8 @@ func main() {
 		err = openWeb(args)
 	case "pair":
 		err = pair(args)
+	case "mcp":
+		err = mcpCmd(args)
 	case "devices":
 		err = devicesCmd(args)
 	case "bluetooth", "ble":
@@ -236,6 +254,8 @@ func main() {
 		err = portsCmd(args)
 	case "diagnostics":
 		err = diagnosticsCmd(args)
+	case "cpu":
+		err = cpuCmd(args)
 	case "version", "--version":
 		fmt.Println(version)
 	case "help", "-h", "--help":
@@ -1066,6 +1086,7 @@ type fileConfig struct {
 	Link       struct {
 		Ports []link.PortConfig `json:"ports"` // serial ports with Deck Link boards (agentctl link add)
 	} `json:"link"`
+	CPUGuard json.RawMessage `json:"cpuGuard"` // cpuguard.Setting, read with cpuguard.FromConfig
 }
 
 // lanIPs are this computer's non-loopback IPv4 addresses.
@@ -1094,9 +1115,13 @@ func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	demoMode := fs.Bool("demo", false, "serve a simulated fleet instead of real agents")
 	still := fs.Bool("still", false, "with --demo: a fleet that doesn't change (for tests)")
+	fixture := fs.String("fixture", "", "with --demo: the fleet from the dataset `FILE` instead of the built-in one")
 	logFile := fs.String("log", "", "append the log to `FILE` instead of printing it")
 	after := fs.Int(strings.TrimPrefix(service.AfterFlag, "--"), 0, "wait until process `PID` (the service this one replaces) has exited")
 	_ = fs.Parse(args)
+	if *fixture != "" && !*demoMode {
+		return errors.New("--fixture goes with --demo")
+	}
 	if err := paths.Ensure(); err != nil {
 		return err
 	}
@@ -1128,13 +1153,25 @@ func serve(args []string) error {
 	var st *store.Store
 	var ctl server.Controller
 	var lc server.LocalController
+	var fleet *demo.Demo
+	var usageEverySession func(bool) error // nil in a demo
 	if *demoMode {
 		st = store.New("", strings.TrimSuffix(host, ".local")+" (demo)", version)
-		d, err := demo.Load(st)
+		var d *demo.Demo
+		var err error
+		if *fixture != "" {
+			d, err = demo.LoadFile(st, *fixture) // only the dataset's fleet
+		} else {
+			d, err = demo.Load(st)
+		}
 		if err != nil {
 			return err
 		}
+		if d.Name != "" {
+			st.Name = d.Name // the dataset names the deck
+		}
 		d.Still = *still
+		fleet = d
 		go d.Run()
 		ctl = d
 	} else {
@@ -1147,6 +1184,16 @@ func serve(args []string) error {
 		d.Adopt()
 		go d.Run()
 		go d.WatchCodex()
+		go d.WatchLimits()
+		if d.Cfg.UsageEverySession {
+			// Accounts added since, and an app that moved, get it too.
+			go func() {
+				if err := d.UsageEverySession(true); err != nil {
+					log.Printf("usage from every session: %v", err)
+				}
+			}()
+		}
+		usageEverySession = d.UsageEverySession
 		go d.WatchOrca()
 		go d.WatchHerdr()
 		go d.WatchCmux()
@@ -1161,10 +1208,36 @@ func serve(args []string) error {
 	}
 	book := &hats.Book{Path: paths.Config()}
 	st.Hat = book.For
+	if fleet != nil {
+		st.Hat = demoHats(fleet, book)
+	}
 	st.Account = accounts.Of
+	// Agent pets (off by default): they eat the agents' tokens.
+	petsPath := paths.Pets()
+	if *demoMode {
+		petsPath = ""
+	}
+	petBook := pets.Open(petsPath, pets.Settings(paths.Config()))
+	st.Pet = petBook.View
+	go petBook.Follow(st.Subscribe, func() []pets.Sight {
+		var out []pets.Sight
+		for _, e := range st.Entries() {
+			out = append(out, pets.Sight{ID: e.A.ID, Session: e.SessionID, Tokens: e.A.Tokens, Status: e.A.Status})
+		}
+		return out
+	}, st.Touch, nil)
 	srv := &server.Server{Store: st, Ctl: ctl, Static: web.Static(),
-		WebSession: webSession, LocalAddr: cfg.LocalAddr, Hats: book,
-		Devices: &devices.Registry{Path: paths.Devices()}, Audit: &devices.Audit{Path: paths.Audit()}}
+		WebSession: webSession, LocalAddr: cfg.LocalAddr, Hats: book, Pets: petBook,
+		Devices: &devices.Registry{Path: paths.Devices()}, Audit: &devices.Audit{Path: paths.Audit()},
+		Tokens: &devices.Tokens{Path: paths.MCPTokens()}}
+	// Prompts queued for busy agents survive a restart (a demo keeps them in memory).
+	queuePath := paths.PromptQueue()
+	if *demoMode {
+		queuePath = ""
+	}
+	srv.Queue = queue.Open(queuePath)
+	st.Queued = srv.Queue.Agents
+	go srv.RunQueue(context.Background())
 	errc := make(chan error, 4)
 	// The default Wi-Fi network for boards plugged in over USB: its password in
 	// the OS secret store (the login Keychain on macOS), never in a file here.
@@ -1174,6 +1247,68 @@ func serve(args []string) error {
 	}
 	wifiDefault := &link.WifiDefault{Store: wifiStore}
 	adm := newAdmin(st, srv, self, *logFile)
+	adm.UsageEverySession = usageEverySession
+	// Each agent's project, by its folder.
+	st.Project = adm.ProjectOf
+	// MCP's project tools change the same list, through the same checks.
+	srv.Projects = adm.MCPProjects()
+	meter := proc.NewCPUMeter()
+	go meter.Run()
+	// The whole machine's CPU: one reader for the service's life, stopped
+	// (its iostat killed) before serve returns.
+	machine := proc.NewMachineMeter()
+	machineCtx, stopMachine := context.WithCancel(context.Background())
+	machineDone := make(chan struct{})
+	go func() { machine.Run(machineCtx); close(machineDone) }()
+	defer func() { stopMachine(); <-machineDone }()
+	adm.CPU = func() proc.CPUReport {
+		r := meter.Report()
+		m := machine.Report()
+		r.Machine = &m
+		return r
+	}
+	adm.CPUTop = func(n int) proc.CPUTop {
+		var panes map[string]string
+		if fleet == nil { // a demo's agents have no terminals
+			panes = tmux.SessionTTYs()
+		}
+		return proc.TopUsers(daemon.AgentTerminals(st.Entries(), panes), n)
+	}
+	// The CPU guard: while the computer is busy it warns, and holds queued
+	// prompts and start_agent over MCP.
+	guard := cpuguard.New(machine)
+	guard.Queued = func() (n int) {
+		for _, c := range srv.Queue.Agents() {
+			n += c
+		}
+		return n
+	}
+	guard.Top = func() []proc.CPUUser { return adm.CPUTop(5).Users }
+	guard.Changed, guard.Logf = st.Touch, log.Printf
+	guard.Ended = adm.DropCPUOverride // a limit picked by hand is over: out of config.json
+	guard.Set(cpuguard.FromConfig(cfg.CPUGuard))
+	srv.Guard, adm.Guard = guard, guard
+	go guard.Run(machineCtx)
+	// While busy, the heaviest agent runs in background mode (macOS). Undone
+	// when calm and on a clean stop; after a crash, here on the next start.
+	// A demo's agents have no processes: nothing to slow.
+	if !*demoMode {
+		slower := &cpuguard.Slower{Guard: guard, List: proc.Processes, File: paths.Slowed(), Self: os.Getpid(),
+			Logf: log.Printf, Changed: st.Touch}
+		slower.Agents = func() []proc.AgentTerminal {
+			var live []store.Entry
+			for _, e := range st.Entries() {
+				if e.A.Status != model.Exited {
+					live = append(live, e)
+				}
+			}
+			return daemon.AgentTerminals(live, tmux.SessionTTYs())
+		}
+		slower.Recover()
+		defer slower.Stop()
+		go slower.Run(machineCtx)
+		guard.Slowed, guard.SlowedByYou, st.Slow, adm.Slower = slower.Slowed, slower.SlowedByYou, slower.Use, slower
+	}
 	hub := &link.Hub{Wifi: wifiDefault, OnFirmware: adm.FirmwareChanged} // updates over Wi-Fi feed admin jobs
 	links := &link.Manager{Deck: link.ServerDeck{S: srv}, Hub: hub, Wifi: wifiDefault,
 		Ports: func() []link.PortConfig { return adm.LinkPorts(loadConfig().Link.Ports) }}
@@ -1236,20 +1371,37 @@ func serve(args []string) error {
 		}()
 	}
 	log.Printf("agentctl %s serving web on http://%s", version, cfg.LocalAddr)
+	go watchStalls(paths.Socket()) // watchdog.go
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 	select {
 	case err := <-errc:
 		st.Flush()
+		_ = petBook.Save()
 		return err
-	case <-sig:
+	case s := <-sig:
 		st.Flush()
-		log.Printf("stopping")
+		_ = petBook.Save()
+		log.Printf("stopping (%s)", sigName(s))
 		return nil
 	case <-serveStop:
 		st.Flush()
+		_ = petBook.Save()
 		log.Printf("stopping (asked from Settings)")
 		return nil
+	}
+}
+
+// demoHats gives a demo agent its hat: one picked by hand on a screen, else
+// the one its dataset names, else the usual one for its folder.
+func demoHats(d *demo.Demo, book *hats.Book) func(cwd string) *model.Hat {
+	return func(cwd string) *model.Hat {
+		if _, byHand := book.Overrides()[hats.Clean(cwd)]; !byHand {
+			if h := d.Hat(cwd); h != nil {
+				return h
+			}
+		}
+		return book.For(cwd)
 	}
 }
 
@@ -1287,8 +1439,8 @@ func setCmd(args []string) error {
 }
 
 func getCmd(args []string) error {
-	vals := map[string]string{"term": daemon.CurrentTerm(), "mouse": daemon.CurrentMouse(), "restore": daemon.CurrentRestore(), "header": daemon.CurrentHeader()}
-	keys := []string{"term", "mouse", "restore", "header"}
+	vals := map[string]string{"term": daemon.CurrentTerm(), "mouse": daemon.CurrentMouse(), "restore": daemon.CurrentRestore(), "header": daemon.CurrentHeader(), "sessions": daemon.CurrentSessions()}
+	keys := []string{"term", "mouse", "restore", "header", "sessions"}
 	if len(args) == 1 {
 		v, ok := vals[args[0]]
 		if !ok {
@@ -1298,7 +1450,7 @@ func getCmd(args []string) error {
 		return nil
 	}
 	for _, k := range keys {
-		fmt.Printf("%-7s %-7s %s\n", k, vals[k], daemon.Settings[k].Help)
+		fmt.Printf("%-8s %-7s %s\n", k, vals[k], daemon.Settings[k].Help)
 	}
 	return nil
 }
@@ -1431,4 +1583,17 @@ func simAgent(args []string) error {
 	}
 	return sim.Run(sim.Config{ID: id, Socket: sock, Dir: *dir, Transcript: *transcript,
 		Seed: time.Now().UnixNano() ^ int64(len(id))<<20, Speed: *speed, Patience: pat})
+}
+
+// sigName says which signal stopped the service, for the log: SIGTERM is
+// launchd or systemd (agentctl install, a restart, logging out), SIGINT is
+// Ctrl-C.
+func sigName(s os.Signal) string {
+	switch s {
+	case syscall.SIGTERM:
+		return "SIGTERM"
+	case syscall.SIGINT:
+		return "SIGINT"
+	}
+	return s.String()
 }

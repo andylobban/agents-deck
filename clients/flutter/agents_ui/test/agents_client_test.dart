@@ -290,6 +290,16 @@ void main() {
       },
     );
 
+    test('queued: prompts waiting for the turn to end, 0 when missing', () {
+      final s = AgentsState.fromJson({
+        'agents': [
+          {'id': 'a1', 'slot': 0, 'status': 'running', 'queued': 2},
+          {'id': 'a2', 'slot': 1, 'status': 'idle'},
+        ],
+      });
+      expect(s.agents.map((a) => a.queued).toList(), [2, 0]);
+    });
+
     test('account: parsed when set, null while only one is set up', () {
       final s = AgentsState.fromJson({
         'agents': [
@@ -498,6 +508,15 @@ void main() {
         if (answerStatus == 409) res.write('{"error":"prompt changed"}');
         return res.close();
       }
+      if (req.uri.path.endsWith('/pet/hatch') && req.method == 'POST') {
+        if (req.uri.path == '/v1/agents/h0m3l4/pet/hatch') {
+          res.statusCode = 204;
+        } else {
+          res.statusCode = 409;
+          res.write('{"error":"this pet isn\'t an egg ready to hatch"}');
+        }
+        return res.close();
+      }
       if (req.uri.path == '/v1/accounts') {
         res.write(
           '{"accounts":[{"name":"personal","color":"teal"},'
@@ -621,6 +640,18 @@ void main() {
       expect(
         (bad.kind, bad.message),
         (AgentsResultKind.rejected, 'no such account'),
+      );
+    });
+
+    test('hatch a ready egg', () async {
+      final c = HttpAgentsClient(loadConfig: () => (cfg(), null));
+      addTearDown(c.dispose);
+      await until(c, (s) => s.link == AgentsLink.connected);
+      expect((await c.hatch('h0m3l4')).isOk, isTrue);
+      final no = await c.hatch('k3f9a2');
+      expect(
+        (no.kind, no.message),
+        (AgentsResultKind.conflict, "this pet isn't an egg ready to hatch"),
       );
     });
 

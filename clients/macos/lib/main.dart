@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:async';
 import 'dart:io' show Platform;
 
@@ -20,12 +21,16 @@ const _menubar = MethodChannel('agents_deck/menubar');
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   final visible = ValueNotifier(false);
+  final pinned = ValueNotifier(false);
   final source = HttpAgentsClient(loadConfig: localAgentsConfig);
   final service = LocalDeckService();
   _menubar.setMethodCallHandler((call) async {
     switch (call.method) {
       case 'visible':
         visible.value = call.arguments == true;
+      case 'pinned':
+        // "Keep the Deck on Top" in the icon's menu.
+        pinned.value = call.arguments == true;
       case 'openSettings':
         // "Settings…" in the icon's menu. False tells the shell to show the
         // deck instead, which says why (the service isn't running).
@@ -47,12 +52,29 @@ void main() {
       unawaited(service.refresh());
     }
   });
+  // Pinning is in the macOS shell (AppDelegate.swift); the Linux tray app
+  // has no Pin button yet.
+  final canPin = Platform.isMacOS;
+  if (canPin) {
+    _menubar
+        .invokeMethod<bool>('isPinned')
+        .then((on) => pinned.value = on == true)
+        .ignore();
+  }
   runApp(
     MenuBarDeck(
       source: source,
       visible: visible,
       service: service,
       onSettings: (page) => unawaited(openSettings(service, page)),
+      pinned: pinned,
+      onPin: canPin
+          ? (on) {
+              pinned.value = on;
+              _menubar.invokeMethod('pin', on).ignore();
+            }
+          : null,
+      onDrag: canPin ? () => _menubar.invokeMethod('drag').ignore() : null,
     ),
   );
 }
@@ -92,6 +114,9 @@ class MenuBarDeck extends StatelessWidget {
     required this.visible,
     this.service,
     this.onSettings,
+    this.pinned,
+    this.onPin,
+    this.onDrag,
   });
 
   final AgentsSource source;
@@ -102,6 +127,15 @@ class MenuBarDeck extends StatelessWidget {
 
   /// Opens Settings on a page (see [settingsPages]).
   final void Function(String page)? onSettings;
+
+  /// Whether the deck is pinned: open above other windows until unpinned.
+  final ValueListenable<bool>? pinned;
+
+  /// Pins or unpins the deck; null leaves out the Pin button.
+  final void Function(bool pinned)? onPin;
+
+  /// Moves the pinned window with the pointer.
+  final VoidCallback? onDrag;
 
   static const design = 720.0;
 
@@ -130,9 +164,20 @@ class MenuBarDeck extends StatelessWidget {
                   builder: (context, status, _) => Column(
                     children: [
                       Expanded(child: _deck(status)),
-                      StatusLine(
-                        status: status,
-                        onOpen: (page) => onSettings?.call(page),
+                      ValueListenableBuilder<bool>(
+                        valueListenable: pinned ?? const _Unpinned(),
+                        builder: (context, on, _) =>
+                            ValueListenableBuilder<AgentsSnapshot>(
+                              valueListenable: source.snapshot,
+                              builder: (context, snap, _) => StatusLine(
+                                status: status,
+                                onOpen: (page) => onSettings?.call(page),
+                                pinned: on,
+                                onPin: onPin,
+                                onDrag: onDrag,
+                                usage: usageStatus(snap.state),
+                              ),
+                            ),
                       ),
                     ],
                   ),
@@ -144,6 +189,20 @@ class MenuBarDeck extends StatelessWidget {
 
   Widget _deck(ServiceStatus? status) {
     final down = status != null && status.state == ServiceState.notRunning;
+    // The deck is laid out at 720 and shown smaller: the grid snaps its
+    // tiles to whole device pixels at that scale.
+    return LayoutBuilder(
+      builder: (context, box) => DeckPixels(
+        devicePerDesign:
+            math.min(box.maxWidth, box.maxHeight) /
+            design *
+            MediaQuery.devicePixelRatioOf(context),
+        child: _fitted(down, status),
+      ),
+    );
+  }
+
+  Widget _fitted(bool down, ServiceStatus? status) {
     return FittedBox(
       child: SizedBox.square(
         dimension: design,
@@ -157,6 +216,7 @@ class MenuBarDeck extends StatelessWidget {
                       source: source,
                       visible: visible,
                       backButton: true, // no edge swipe here
+                      menuBar: true,
                       pairingCard: (problem) => NotRunningCard(
                         status: service?.status.value,
                         onStart: service?.start,
@@ -169,6 +229,20 @@ class MenuBarDeck extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Never pinned: for a deck without a [MenuBarDeck.pinned].
+class _Unpinned implements ValueListenable<bool> {
+  const _Unpinned();
+
+  @override
+  bool get value => false;
+
+  @override
+  void addListener(VoidCallback listener) {}
+
+  @override
+  void removeListener(VoidCallback listener) {}
 }
 
 /// The service isn't running on this computer: Start, when the app came

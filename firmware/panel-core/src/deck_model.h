@@ -140,6 +140,7 @@ static inline void agentFromLink(const agentsdeck_link_v1_Agent& in, Agent& a) {
     for (int i = 0; i < kHatColorCount; i++)
       if (!strcmp(in.hat.color, kHatColors[i])) a.hatColor = (uint8_t)i;
   }
+  deck_pet_from_proto(&a.pet, in.has_pet, &in.pet);   // no pet while Agent pets is off
 }
 
 // ---------------------------------------------------------------- the fleet
@@ -280,6 +281,7 @@ struct PanelSpec {
   const char* type;
   uint32_t width, height;
   bool touch;          // a touch screen besides the BOOT button
+  bool motion = false; // a motion sensor (the magic trick's receiver)
 };
 
 // The version a board reports in Hello: AGENTS_DECK_VERSION when the build
@@ -304,6 +306,7 @@ static inline void panelConfig(deck_link_config_t& cfg, const char* boardId, con
   cfg.display_color = true;
   cfg.input_count = 0;
   if (spec.touch) cfg.inputs[cfg.input_count++] = agentsdeck_link_v1_Input_INPUT_TOUCH;
+  if (spec.motion) cfg.inputs[cfg.input_count++] = agentsdeck_link_v1_Input_INPUT_MOTION;   // it can receive the magic trick
   cfg.inputs[cfg.input_count++] = agentsdeck_link_v1_Input_INPUT_BUTTON;
   cfg.first_slot = 0;
   cfg.slot_count = 0;   // every agent; the board keeps the kMaxAgents lowest slots

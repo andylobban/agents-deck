@@ -20,7 +20,8 @@ ignore the rate.
 
 Opening a serial port can reset an ESP32 dev board (DTR/RTS). The board then simply starts over with
 `Hello`. The deck only opens ports you registered with `agentctl link add`, and lets go of a port
-while another program (a flasher, a serial monitor) has it open.
+while another program (a flasher, a serial monitor) has it open: it notices when the board goes quiet
+(the other program reset it or reads its bytes), and at least every ten minutes.
 
 ## Framing
 
@@ -37,7 +38,7 @@ COBS( 0xDE 0xC1 | 0x01 | <Frame, protobuf> | CRC16 hi | CRC16 lo ) 0x00
   removes every zero byte, so `0x00` ends a frame. After any noise or a corrupt frame, a reader
   resynchronises at the next `0x00`.
 - A frame is at most **4096 bytes** before COBS, unless the board asks for less in `Hello.max_frame`
-  (at least 512). The largest frame the deck can send with the limits in `link.options` is 3406 bytes.
+  (at least 512). The largest frame the deck can send with the limits in `link.options` is 3425 bytes.
 
 Anything that isn't a valid frame is ignored, including the ESP32's boot log. Since `0xDE 0xC1` never
 occurs in UTF-8 text, printing text on the same port is harmless.
@@ -99,10 +100,11 @@ board                                   deck
 
   | bit | group | fields |
   |---|---|---|
-  | 1 | `FIELDS_TILE` | `title tool status status_since_ms folder context unseen lost focused external app hat account activity.tool subagent_count attention_slot` |
-  | 2 | `FIELDS_CARD` | `ai_title cwd branch model model_label effort activity.detail last_prompt error resumable attached subagents started_at_ms updated_at_ms last_active_ms` |
+  | 1 | `FIELDS_TILE` | `title tool status status_since_ms folder context unseen lost focused external app hat account activity.tool subagent_count attention_slot queued slowed slowed_by_you project pet out_until_ms` |
+  | 2 | `FIELDS_CARD` | `ai_title cwd branch model model_label effort activity.detail last_prompt last_answer last_answer_at_ms error resumable attached subagents started_at_ms updated_at_ms last_active_ms project_folder` |
   | 4 | `FIELDS_PROMPT` | `waiting` |
-  | 8 | `FIELDS_NUMBERS` | `tokens cost_usd turns` |
+  | 8 | `FIELDS_NUMBERS` | `tokens cost_usd turns cpu` |
+  | 16 | `FIELDS_LIMITS` | not an agent field: the board also gets `Limits` |
 
   `id` and `slot` are always set. `fields: 0` means `FIELDS_TILE`.
 - **The "Needs you" grid.** `attention_slot` is the agent's spot on the "Needs you" screen, 1 to 16 (a
@@ -112,6 +114,12 @@ board                                   deck
   fewer cells shows the agents in order of their spot, lowest first, in the cells it has; the rest
   aren't shown, but the count on its mark includes them. To see every agent on it, subscribe to every
   agent (`slot_count: 0`).
+- **Usage limits.** With `FIELDS_LIMITS` the deck sends `Limits` after the snapshot's `SnapshotEnd`
+  (when there are any) and again whenever they change: one `LimitSet` per account and tool, its shown
+  windows (the week first, at most 4) with percent used, reset time and level (`LIMIT_OK` under 80%,
+  `LIMIT_NEAR` from 80, `LIMIT_LOW` from 95, `LIMIT_OUT` at 100 or hit). `stale` means the window reset
+  since the tool's last report. An agent whose account or model is out has `out_until_ms` set (rules in
+  [protocol.md](../protocol.md#usage-limits)).
 - **Updates.** When an agent changes in a way the board can see (a subscribed field), the deck resends
   that whole agent in `AgentChanged`. An agent that leaves the subscribed slots, or the deck, gets
   `AgentRemoved`.
@@ -131,11 +139,17 @@ the request's `seq`: `Result` (the web API's status code and error text) or a ty
 | `ListHats` | `GET /v1/hats` | view | `HatList` |
 | `ListAccounts` | `GET /v1/accounts` | view | `AccountList` |
 | `Answer {agent_id, prompt_id, key}` | `POST /v1/agents/{id}/answer` | act | `Result`: 204; 409 if the prompt changed; 400 if `key` isn't an option. A question with several parts comes one step at a time, each a new prompt; `Option.selected` marks ticked answers of a pick-any question (see the web API's Prompt) |
+| `SendPrompt {agent_id, text, interrupt, mode, front}` | `POST /v1/agents/{id}/prompt` | act | `Result`: 204; with `mode` `SEND_NOW` (the default), 409 while the agent works (unless `interrupt`), asks a question, starts or has exited; `SEND_INTERRUPT` is `interrupt`; `SEND_QUEUE` answers 200 when the prompt went in at once, 202 when it was queued to go in once the agent's turn ends (`front`: before the prompts queued earlier; `Agent.queued` counts them); `SEND_TYPE` types it in now even while the agent works (the tool's own queue holds it), 204, and 409 while it asks a question, starts or has exited. 422 for a session the deck can't type into. `text` is at most 383 bytes (384 with its NUL in `link.options`), so the whole frame fits the smallest frame a board may ask for (512 bytes); the web API takes up to 4000 |
+| `Queue {agent_id}` | `GET /v1/agents/{id}/queue` | view | `QueueList`: the first 4 queued prompts, next first, text clipped to 63 bytes; `total` says how many there are |
+| `Queue {agent_id, cancel_id}` | `POST /v1/agents/{id}/queue/{qid}/cancel` | act | `Result`: 204; 404 when it was sent or cancelled already |
 | `Focus`, `Interrupt` `{agent_id}` | `POST /v1/agents/{id}/focus`, `…/interrupt` | act | `Result` |
 | `Move {agent_id, slot}` | `POST /v1/agents/{id}/move` | act | `Result` |
 | `MoveAttention {agent_id, slot}` | `POST /v1/agents/{id}/attention` | act | `Result`: 204; 409 if the agent isn't on the "Needs you" grid; 400 if `slot` isn't 1 to 16 |
 | `Order {agent_ids}` | `POST /v1/order` | act | `Result` |
+| `Stash {agent_ids, all}` | `POST /v1/stash` | act | `Result` |
+| `MagicView {agent_ids}` | `POST /v1/magic/view` | act | `Result` |
 | `SetHat {agent_id or folder, shape, color, automatic}` | `POST /v1/agents/{id}/hat`, `POST /v1/hats` | act | `Result` |
+| `HatchPet {agent_id}` | `POST /v1/agents/{id}/pet/hatch` | act | `Result`: 204 when the agent's egg hatched; 409 if it isn't ready (`Pet.ready`). Frame field 70 |
 | `Dismiss`, `Resume` `{agent_id}` | `POST /v1/agents/{id}/dismiss`, `…/resume` | admin | `Result` |
 | `Handoff {agent_id, account}` | `POST /v1/agents/{id}/handoff` | admin | `Result` (200 when it started) |
 | `Restore {agent_ids}` | `POST /v1/restore` | admin | `RestoreResult`: the listed lost agents, or every lost agent when `agent_ids` is empty |
@@ -297,7 +311,7 @@ It is never the password.
 | `WifiConfig` | deck → board, answered with `Result` | 62 | USB serial, Bluetooth |
 | `NetStatus` | board → deck | 63 | any |
 
-These are not web API commands, so they have no route; the parity test keeps commands in fields 30–49
+These are not web API commands, so they have no route; the parity test keeps commands in fields 30–49 (and 70–89, once those were taken)
 and checks these are documented here.
 
 ## Firmware updates over Wi-Fi
